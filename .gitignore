@@ -11,3 +11,8 @@ __pycache__/
 
 # Office temp lock files
 ~$*.docx
+
+# Keep repository code-only
+*.pdf
+*.docx
+report_intro_eda_draft.md
