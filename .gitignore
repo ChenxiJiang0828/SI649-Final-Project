@@ -1,0 +1,13 @@
+# Raw data (too large for GitHub, can be kept locally)
+2025_specimen_time_series_events_no_phi.tsv
+
+# Generated outputs (reproducible by scripts)
+outputs/
+
+# Temporary extraction/cache files
+__docx_extract/
+__pycache__/
+*.pyc
+
+# Office temp lock files
+~$*.docx
