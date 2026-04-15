@@ -285,6 +285,69 @@ def make_likelihood_fig(
     return fig, out
 
 
+def compute_attainment_6h_table(df: pd.DataFrame, group_col: str, top_n: int = 10) -> pd.DataFrame:
+    stage_map = {
+        "Collected": "offset_test_collected_dt_h",
+        "Received": "offset_test_receipt_dt_h",
+        "First Result": "offset_test_min_resulted_dt_h",
+        "Final Verified": "offset_test_max_verified_dt_h",
+    }
+    valid = df[df[group_col].notna()].copy()
+    if valid.empty:
+        return pd.DataFrame()
+
+    top_groups = valid[group_col].value_counts().head(top_n)
+    rows = []
+    for g, n in top_groups.items():
+        sub = valid[valid[group_col] == g]
+        rec = {"group": str(g), "n": int(n)}
+        for stage_name, col in stage_map.items():
+            if col in sub.columns:
+                s = sub[col].dropna()
+                rate = float((s <= 6).mean()) if len(s) else np.nan
+            else:
+                rate = np.nan
+            rec[stage_name] = rate
+        rows.append(rec)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["group_label"] = out["group"] + " (" + out["n"].map(lambda x: f"{x:,}") + ")"
+    return out
+
+
+def make_attainment_6h_heatmap(df: pd.DataFrame, group_col: str, top_n: int = 10) -> tuple[go.Figure, pd.DataFrame]:
+    t = compute_attainment_6h_table(df, group_col, top_n=top_n)
+    if t.empty:
+        return go.Figure(), t
+
+    stage_cols = ["Collected", "Received", "First Result", "Final Verified"]
+    z = t[stage_cols].to_numpy() * 100.0
+    y = t["group_label"].tolist()
+    text = [[f"{v:.1f}%" if pd.notna(v) else "N/A" for v in row] for row in z]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=stage_cols,
+            y=y,
+            text=text,
+            texttemplate="%{text}",
+            colorscale="Blues",
+            zmin=0,
+            zmax=100,
+            colorbar=dict(title="Within 6h (%)"),
+            hovertemplate="Group=%{y}<br>Stage=%{x}<br>6h Attainment=%{z:.1f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=f"6-hour attainment by {GROUPABLE_LABELS.get(group_col, group_col)} (Top {min(top_n, len(t))} by volume)",
+        xaxis_title="Stage",
+        yaxis_title="Group (sample size)",
+        height=450,
+    )
+    return fig, t
+
+
 def compute_likelihood_pvalue(out: pd.DataFrame, group_a: str, group_b: str) -> dict:
     if out.shape[0] != 2:
         return {"ok": False, "reason": "Likelihood test currently supports exactly 2 groups."}
@@ -429,8 +492,17 @@ def main() -> None:
     st.markdown("---")
 
     t = summarize_offsets(f)
-    fig1 = make_timeline_fig(t, "1) Average Timeline (Filtered Cohort)")
+    fig1 = make_timeline_fig(t, "Average Timeline (Filtered Cohort)")
     st.plotly_chart(fig1, use_container_width=True)
+
+    # New pre-A/B view: top-N group 6-hour attainment heatmap.
+    fig_attain, attainment_tbl = make_attainment_6h_heatmap(f, group_col=group_col, top_n=10)
+    if fig_attain.data:
+        st.plotly_chart(fig_attain, use_container_width=True)
+        st.caption(
+            "Top groups by sample count under current filters. "
+            "Cells show percent of samples reaching each stage within 6 hours from order placed."
+        )
 
     c1, c2 = st.columns(2)
 
