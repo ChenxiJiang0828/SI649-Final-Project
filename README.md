@@ -4,7 +4,8 @@ This project analyzes lab specimen journey events and provides:
 - Reproducible EDA outputs
 - A draft PDF report section (`Introduction` + `EDA`)
 - An interactive dashboard with:
-  - Average timeline view
+  - Stage completion curves (time vs % completed)
+  - Top-group attainment heatmap (threshold-adjustable)
   - A/B comparison view
   - Event likelihood view (with p-values and significance summary)
 
@@ -73,17 +74,19 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
 - A/B grouping options:
   - Weekday vs Weekend (`Order Day Type`)
   - Street / department / location / test code
-- Defect event options:
+- Attainment heatmap control (in main area):
+  - `Attainment Threshold for Heatmap (hours)` with 0.5-hour step
+- Defect event (current dashboard version):
   - Cancellation event
-  - Slow turnaround (threshold configurable)
 - Statistical outputs:
-  - A/B turnaround: Mann-Whitney U test + p-value + natural-language significance summary
+  - A/B completion timing (`Order -> Final Verified`): Mann-Whitney U test + p-value + natural-language significance summary
   - Event likelihood: two-proportion z-test + p-value + natural-language significance summary
 
 ## Notes
 
 - Main analysis grain is **ordered test**: `accession_id + test_code`.
 - `Order Placed` is excluded in A/B chart because it is the zero-time baseline by definition.
+- Completion curves are displayed for the first 15 hours after order placement.
 - If filters produce no rows, relax filters in the sidebar.
 
 ## Reproducibility Checklist
@@ -92,4 +95,3 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
 2. `python scripts/eda_specimen.py`
 3. `python scripts/generate_intro_eda_pdf.py` (optional for report draft)
 4. `streamlit run dashboard_app.py`
-
