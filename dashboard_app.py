@@ -117,6 +117,63 @@ def make_timeline_fig(t: pd.DataFrame, title: str) -> go.Figure:
     return fig
 
 
+def make_completion_curves_fig(df: pd.DataFrame, title: str) -> go.Figure:
+    stage_cols = {
+        "Collected": "offset_test_collected_dt_h",
+        "Received": "offset_test_receipt_dt_h",
+        "First Result": "offset_test_min_resulted_dt_h",
+        "Final Verified": "offset_test_max_verified_dt_h",
+    }
+
+    # Build x-axis range from observed non-negative offsets.
+    all_offsets = []
+    for col in stage_cols.values():
+        if col in df.columns:
+            s = df[col].dropna()
+            s = s[s >= 0]
+            if len(s):
+                all_offsets.append(s)
+    if not all_offsets:
+        return go.Figure()
+
+    merged = pd.concat(all_offsets, ignore_index=True)
+    _ = merged  # keep for possible future diagnostics
+    x_max = 15.0
+    x_grid = np.linspace(0, x_max, 120)
+
+    fig = go.Figure()
+    for label, col in stage_cols.items():
+        if col not in df.columns:
+            continue
+        s = df[col].dropna()
+        s = s[s >= 0]
+        if len(s) == 0:
+            continue
+
+        # Fraction completed by time t among rows that have this milestone timestamp.
+        y = [(s <= t).mean() * 100 for t in x_grid]
+        fig.add_trace(
+            go.Scatter(
+                x=x_grid,
+                y=y,
+                mode="lines",
+                name=label,
+                hovertemplate="Time=%{x:.2f}h<br>Completed=%{y:.1f}%<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Hours Since Order Placed",
+        xaxis=dict(range=[0, 15]),
+        yaxis_title="Completed Samples (%)",
+        yaxis=dict(range=[0, 100], ticksuffix="%"),
+        height=430,
+        legend_title="Stage",
+    )
+    return fig
+
+
 def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) -> go.Figure:
     gdf = df[df[group_col].isin([group_a, group_b])].copy()
     rows = []
@@ -151,16 +208,19 @@ def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) ->
     return fig
 
 
-def compute_ab_turnaround_stats(
+def compute_ab_completion_stats(
     df: pd.DataFrame,
     group_col: str,
     group_a: str,
     group_b: str,
-    metric_col: str = "offset_test_min_verified_dt_h",
+    metric_col: str = "offset_test_max_verified_dt_h",
 ) -> dict:
     sub = df[df[group_col].isin([group_a, group_b])].copy()
     a = sub.loc[sub[group_col] == group_a, metric_col].dropna().astype(float)
     b = sub.loc[sub[group_col] == group_b, metric_col].dropna().astype(float)
+
+    a = a[a >= 0]
+    b = b[b >= 0]
 
     if len(a) < 2 or len(b) < 2:
         return {"ok": False, "reason": "Not enough data points for statistical testing."}
@@ -173,30 +233,26 @@ def compute_ab_turnaround_stats(
 
     if test.pvalue < 0.05:
         sentence = (
-            f"{slower} is significantly slower than {faster} "
+            f"{slower} is significantly slower than {faster} in Order -> Final Verified timing "
             f"(median difference {abs(diff):.2f}h, p={test.pvalue:.3g})."
         )
     else:
         sentence = (
-            f"No statistically significant turnaround difference between {group_a} and {group_b} "
-            f"(median difference {abs(diff):.2f}h, p={test.pvalue:.3g})."
+            f"No statistically significant difference between {group_a} and {group_b} "
+            f"in Order -> Final Verified timing (median difference {abs(diff):.2f}h, p={test.pvalue:.3g})."
         )
 
     return {
         "ok": True,
-        "n_a": int(len(a)),
-        "n_b": int(len(b)),
-        "median_a": med_a,
-        "median_b": med_b,
         "pvalue": float(test.pvalue),
         "sentence": sentence,
+        "n_a": int(len(a)),
+        "n_b": int(len(b)),
     }
 
 
-def defect_rate(df: pd.DataFrame, mode: str, threshold_h: float = 24.0) -> pd.Series:
-    if mode == "cancellation_dt":
-        return df["cancellation_dt"].notna()
-    return df["offset_test_min_verified_dt_h"].gt(threshold_h)
+def defect_rate(df: pd.DataFrame) -> pd.Series:
+    return df["cancellation_dt"].notna()
 
 
 def make_likelihood_fig(
@@ -204,14 +260,12 @@ def make_likelihood_fig(
     group_col: str,
     group_a: str,
     group_b: str,
-    defect_mode: str,
-    threshold_h: float,
 ) -> tuple[go.Figure, pd.DataFrame]:
     gdf = df[df[group_col].isin([group_a, group_b])].copy()
     if gdf.empty:
         return go.Figure(), pd.DataFrame()
 
-    gdf = gdf.assign(defect_flag=defect_rate(gdf, defect_mode, threshold_h))
+    gdf = gdf.assign(defect_flag=defect_rate(gdf))
 
     out = (
         gdf.groupby(group_col, dropna=False)["defect_flag"]
@@ -225,7 +279,7 @@ def make_likelihood_fig(
     out["ci_low"] = (out["likelihood"] - 1.96 * out["se"]).clip(lower=0)
     out["ci_high"] = (out["likelihood"] + 1.96 * out["se"]).clip(upper=1)
 
-    title_event = "cancellation_dt" if defect_mode == "cancellation_dt" else f"slow turnaround > {threshold_h:.0f}h"
+    title_event = "cancellation_dt"
 
     # Dot plot with confidence intervals is more readable for 2-group A/B.
     fig = go.Figure()
@@ -285,7 +339,9 @@ def make_likelihood_fig(
     return fig, out
 
 
-def compute_attainment_6h_table(df: pd.DataFrame, group_col: str, top_n: int = 10) -> pd.DataFrame:
+def compute_attainment_6h_table(
+    df: pd.DataFrame, group_col: str, threshold_h: float = 6.0, top_n: int = 10
+) -> pd.DataFrame:
     stage_map = {
         "Collected": "offset_test_collected_dt_h",
         "Received": "offset_test_receipt_dt_h",
@@ -304,7 +360,7 @@ def compute_attainment_6h_table(df: pd.DataFrame, group_col: str, top_n: int = 1
         for stage_name, col in stage_map.items():
             if col in sub.columns:
                 s = sub[col].dropna()
-                rate = float((s <= 6).mean()) if len(s) else np.nan
+                rate = float((s <= threshold_h).mean()) if len(s) else np.nan
             else:
                 rate = np.nan
             rec[stage_name] = rate
@@ -315,8 +371,10 @@ def compute_attainment_6h_table(df: pd.DataFrame, group_col: str, top_n: int = 1
     return out
 
 
-def make_attainment_6h_heatmap(df: pd.DataFrame, group_col: str, top_n: int = 10) -> tuple[go.Figure, pd.DataFrame]:
-    t = compute_attainment_6h_table(df, group_col, top_n=top_n)
+def make_attainment_6h_heatmap(
+    df: pd.DataFrame, group_col: str, threshold_h: float = 6.0, top_n: int = 10
+) -> tuple[go.Figure, pd.DataFrame]:
+    t = compute_attainment_6h_table(df, group_col, threshold_h=threshold_h, top_n=top_n)
     if t.empty:
         return go.Figure(), t
 
@@ -335,12 +393,15 @@ def make_attainment_6h_heatmap(df: pd.DataFrame, group_col: str, top_n: int = 10
             colorscale="Blues",
             zmin=0,
             zmax=100,
-            colorbar=dict(title="Within 6h (%)"),
-            hovertemplate="Group=%{y}<br>Stage=%{x}<br>6h Attainment=%{z:.1f}%<extra></extra>",
+            colorbar=dict(title=f"Within {threshold_h:g}h (%)"),
+            hovertemplate=f"Group=%{{y}}<br>Stage=%{{x}}<br>{threshold_h:g}h Attainment=%{{z:.1f}}%<extra></extra>",
         )
     )
     fig.update_layout(
-        title=f"6-hour attainment by {GROUPABLE_LABELS.get(group_col, group_col)} (Top {min(top_n, len(t))} by volume)",
+        title=(
+            f"{threshold_h:g}-hour attainment by {GROUPABLE_LABELS.get(group_col, group_col)} "
+            f"(Top {min(top_n, len(t))} by volume)"
+        ),
         xaxis_title="Stage",
         yaxis_title="Group (sample size)",
         height=450,
@@ -408,9 +469,7 @@ def main() -> None:
                 ["test_performing_dept", "Lab department responsible for running the test."],
                 ["test_performing_location", "Physical location of the performing lab."],
                 ["test_ordered_dt", "Timestamp when the order was placed."],
-                ["offset_test_min_verified_dt_h", "Turnaround hours from order to first verified result."],
                 ["cancellation_dt", "Timestamp when the ordered test was cancelled (if applicable)."],
-                ["Slow Turnaround", "Derived defect: turnaround hours > selected threshold."],
             ],
             columns=["Field", "Meaning"],
         )
@@ -457,12 +516,7 @@ def main() -> None:
         group_a = st.selectbox("Group A", options=grp_values, index=grp_values.index(default_a))
         group_b = st.selectbox("Group B", options=grp_values, index=grp_values.index(default_b))
 
-        defect_mode_label = st.selectbox(
-            "Defect Event",
-            options=["Cancellation Event", "Slow Turnaround"],
-            help="Slow Turnaround means: order -> first verified result is greater than threshold.",
-        )
-        slow_threshold = st.slider("Slow Turnaround Threshold (hours)", 6, 96, 24, 2)
+        st.caption("Event likelihood is computed for: Cancellation Event")
 
     f = df.copy()
     if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -484,24 +538,32 @@ def main() -> None:
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Ordered Tests (Filtered)", f"{len(f):,}")
     k2.metric("Unique Orders", f"{f['accession_id'].nunique():,}")
-    med_tat = f["offset_test_min_verified_dt_h"].dropna().median()
-    k3.metric("Median Turnaround (Order -> First Verified)", f"{med_tat:.2f} h" if pd.notna(med_tat) else "N/A")
+    verified_cov = f["test_max_verified_dt"].notna().mean()
+    k3.metric("Final Verified Coverage", f"{verified_cov:.2%}")
     cancel_rate = f["cancellation_dt"].notna().mean()
     k4.metric("Cancellation Rate", f"{cancel_rate:.2%}")
 
     st.markdown("---")
 
-    t = summarize_offsets(f)
-    fig1 = make_timeline_fig(t, "Average Timeline (Filtered Cohort)")
+    fig1 = make_completion_curves_fig(f, "Completion Curves by Stage (Filtered Cohort)")
     st.plotly_chart(fig1, use_container_width=True)
 
-    # New pre-A/B view: top-N group 6-hour attainment heatmap.
-    fig_attain, attainment_tbl = make_attainment_6h_heatmap(f, group_col=group_col, top_n=10)
+    # Pre-A/B view: top-N group attainment heatmap with local threshold control.
+    attainment_threshold = st.slider(
+        "Attainment Threshold for Heatmap (hours)",
+        min_value=0.5,
+        max_value=24.0,
+        value=6.0,
+        step=0.5,
+    )
+    fig_attain, attainment_tbl = make_attainment_6h_heatmap(
+        f, group_col=group_col, threshold_h=attainment_threshold, top_n=10
+    )
     if fig_attain.data:
         st.plotly_chart(fig_attain, use_container_width=True)
         st.caption(
             "Top groups by sample count under current filters. "
-            "Cells show percent of samples reaching each stage within 6 hours from order placed."
+            f"Cells show percent of samples reaching each stage within {attainment_threshold} hours from order placed."
         )
 
     c1, c2 = st.columns(2)
@@ -512,21 +574,20 @@ def main() -> None:
         else:
             fig2 = make_ab_fig(f, group_col, group_a, group_b)
             st.plotly_chart(fig2, use_container_width=True)
-            ab_stats = compute_ab_turnaround_stats(f, group_col, group_a, group_b)
+            ab_stats = compute_ab_completion_stats(f, group_col, group_a, group_b)
             if ab_stats.get("ok"):
                 st.caption(
-                    f"A/B Turnaround Test (Mann-Whitney U): p-value = {ab_stats['pvalue']:.4g}. "
+                    f"A/B completion timing test (Mann-Whitney U): p-value = {ab_stats['pvalue']:.4g}. "
                     f"{ab_stats['sentence']}"
                 )
             else:
-                st.caption(f"A/B Turnaround Test: {ab_stats.get('reason')}")
+                st.caption(f"A/B completion timing test: {ab_stats.get('reason')}")
 
     with c2:
         if group_a == group_b:
             st.info("Choose different Group A and Group B for likelihood view.")
         else:
-            defect_mode = "cancellation_dt" if defect_mode_label == "Cancellation Event" else "slow_turnaround"
-            fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b, defect_mode, slow_threshold)
+            fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b)
             st.plotly_chart(fig3, use_container_width=True)
             like_stats = compute_likelihood_pvalue(ldf, group_a, group_b) if not ldf.empty else {"ok": False}
             if like_stats.get("ok"):
@@ -561,7 +622,6 @@ def main() -> None:
                 "test_performing_dept",
                 "test_performing_location",
                 "test_ordered_dt",
-                "offset_test_min_verified_dt_h",
                 "cancellation_dt",
             ]
         ]
@@ -574,7 +634,6 @@ def main() -> None:
             "test_performing_dept": "Performing Dept",
             "test_performing_location": "Performing Location",
             "test_ordered_dt": "Order Time (UTC)",
-            "offset_test_min_verified_dt_h": "Turnaround Hours (Order -> First Verified)",
             "cancellation_dt": "Cancellation Time (UTC)",
         },
         use_container_width=True,
