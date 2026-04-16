@@ -574,11 +574,11 @@ def main() -> None:
         st.header("Global Filters")
         ordered_min = df["test_ordered_dt"].min()
         ordered_max = df["test_ordered_dt"].max()
+        ordered_min_date = ordered_min.date()
+        ordered_max_date = ordered_max.date()
         date_range = st.date_input(
             "Ordered Date Range",
-            value=(ordered_min.date(), ordered_max.date()),
-            min_value=ordered_min.date(),
-            max_value=ordered_max.date(),
+            value=(ordered_min_date, ordered_max_date),
         )
 
         top_test_codes = df["test_code"].value_counts().head(50).index.tolist()
@@ -615,7 +615,16 @@ def main() -> None:
 
     f = df.copy()
     if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = pd.to_datetime(date_range[0], utc=True), pd.to_datetime(date_range[1], utc=True)
+        requested_start = date_range[0]
+        requested_end = date_range[1]
+        clamped_start = max(requested_start, ordered_min_date)
+        clamped_end = min(requested_end, ordered_max_date)
+        if requested_start != clamped_start or requested_end != clamped_end:
+            st.info(
+                "Selected date range exceeded available data and was auto-clamped to "
+                f"{ordered_min_date} - {ordered_max_date}."
+            )
+        start_date, end_date = pd.to_datetime(clamped_start, utc=True), pd.to_datetime(clamped_end, utc=True)
         f = f[(f["test_ordered_dt"] >= start_date) & (f["test_ordered_dt"] <= end_date + pd.Timedelta(days=1))]
     if selected_codes:
         f = f[f["test_code"].isin(selected_codes)]
