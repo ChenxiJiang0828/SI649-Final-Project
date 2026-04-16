@@ -432,7 +432,7 @@ def make_likelihood_fig(
                 "Defect Count=%{customdata[0]}<br>"
                 "Total=%{customdata[1]}<extra></extra>"
             ),
-            name="Defect Likelihood",
+            name="Cancellation Likelihood",
         )
     )
     if len(out) == 2:
@@ -772,7 +772,7 @@ def main() -> None:
                             "group": "Group",
                             "defect_n": "Defect Count",
                             "total_n": "Total Ordered Tests",
-                            "likelihood": "Defect Likelihood",
+                            "likelihood": "Cancellation Likelihood",
                         }
                     ),
                     use_container_width=True,
