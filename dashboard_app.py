@@ -637,16 +637,16 @@ def main() -> None:
         )
 
         top_test_codes = df["test_code"].value_counts().head(50).index.tolist()
-        selected_codes = st.multiselect("Test Code (Top 50 by volume)", options=top_test_codes, default=[])
+        selected_codes = st.multiselect("Test Code", options=top_test_codes, default=[])
 
         top_streets = df["event_street"].value_counts().head(30).index.tolist()
-        selected_streets = st.multiselect("Collection/Transit Street (Top 30)", options=top_streets, default=[])
+        selected_streets = st.multiselect("Collection/Transit Street", options=top_streets, default=[])
 
         top_depts = df["test_performing_dept"].value_counts().head(30).index.tolist()
-        selected_depts = st.multiselect("Performing Lab Department (Top 30)", options=top_depts, default=[])
+        selected_depts = st.multiselect("Performing Lab Department", options=top_depts, default=[])
 
         top_locs = df["test_performing_location"].value_counts().head(30).index.tolist()
-        selected_locs = st.multiselect("Performing Lab Location (Top 30)", options=top_locs, default=[])
+        selected_locs = st.multiselect("Performing Lab Location", options=top_locs, default=[])
 
         st.markdown("---")
         st.header("A/B + Likelihood Setup")
