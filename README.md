@@ -11,7 +11,8 @@ This project analyzes lab specimen journey events and provides:
 
 ## Project Structure
 
-- `2025_specimen_time_series_events_no_phi.tsv`: source dataset
+- `2025_specimen_time_series_events_no_phi.tsv`: original raw source dataset (local)
+- `data/raw_parts/*.tsv`: split raw dataset parts for GitHub-compatible storage
 - `requirements.txt`: Python dependencies
 - `scripts/eda_specimen.py`: EDA pipeline + intermediate outputs
 - `scripts/generate_intro_eda_pdf.py`: generates `report_intro_eda.pdf`
@@ -63,6 +64,15 @@ streamlit run dashboard_app.py
 
 Then open the local URL shown in terminal (typically `http://localhost:8501`).
 
+### Data Loading Order (Dashboard)
+
+`dashboard_app.py` auto-loads data in this order:
+1. `outputs/eda/ordered_test_level_table.parquet`
+2. `outputs/eda/ordered_test_level_table.csv`
+3. `data/ordered_test_level_table.parquet`
+4. `data/ordered_test_level_table.csv`
+5. If none exist, build on startup from `data/raw_parts/2025_specimen_time_series_events_no_phi.part*.tsv`
+
 ## Dashboard Features
 
 - Global filters:
@@ -81,6 +91,8 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
 - Statistical outputs:
   - A/B completion timing (`Order -> Final Verified`): Mann-Whitney U test + p-value + natural-language significance summary
   - Event likelihood: two-proportion z-test + p-value + natural-language significance summary
+- Robust date behavior:
+  - If selected date range exceeds data bounds, it is auto-clamped to available min/max dates.
 
 ## Notes
 
@@ -88,6 +100,7 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
 - `Order Placed` is excluded in A/B chart because it is the zero-time baseline by definition.
 - Completion curves are displayed for the first 15 hours after order placement.
 - If filters produce no rows, relax filters in the sidebar.
+- Raw dataset is split into multiple TSV parts because GitHub rejects single files larger than 100MB.
 
 ## Reproducibility Checklist
 
