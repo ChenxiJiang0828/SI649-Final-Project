@@ -31,7 +31,7 @@ MILESTONES = [
     "cancellation_dt",
 ]
 
-MEDIAN_BASELINE_LABEL = "Median (All Filtered Cohort)"
+MEDIAN_BASELINE_LABEL = "All Others (Complement)"
 
 GROUPABLE_COLS = [
     "order_day_type",
@@ -271,14 +271,17 @@ def make_completion_curves_fig(df: pd.DataFrame, title: str) -> go.Figure:
 
 
 def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) -> go.Figure:
-    def _subset_for_group(g: str) -> pd.DataFrame:
+    def _subset_for_group(g: str, other: str) -> pd.DataFrame:
         if g == MEDIAN_BASELINE_LABEL:
-            return df.copy()
-        return df[df[group_col] == g].copy()
+            if other == MEDIAN_BASELINE_LABEL:
+                return df.iloc[0:0].copy()
+            return df[df[group_col].notna() & (df[group_col].astype(str) != str(other))].copy()
+        return df[df[group_col].astype(str) == str(g)].copy()
 
     rows = []
     for g in [group_a, group_b]:
-        sub = _subset_for_group(g)
+        other = group_b if g == group_a else group_a
+        sub = _subset_for_group(g, other)
         if sub.empty:
             continue
         s = summarize_offsets(sub)
@@ -318,15 +321,18 @@ def compute_ab_completion_stats(
     group_b: str,
     metric_col: str = "offset_test_max_verified_dt_h",
 ) -> dict:
-    def _series_for_group(g: str) -> pd.Series:
+    def _series_for_group(g: str, other: str) -> pd.Series:
         if g == MEDIAN_BASELINE_LABEL:
-            s = df[metric_col].dropna().astype(float)
+            if other == MEDIAN_BASELINE_LABEL:
+                return pd.Series(dtype=float)
+            mask = df[group_col].notna() & (df[group_col].astype(str) != str(other))
+            s = df.loc[mask, metric_col].dropna().astype(float)
         else:
-            s = df.loc[df[group_col] == g, metric_col].dropna().astype(float)
+            s = df.loc[df[group_col].astype(str) == str(g), metric_col].dropna().astype(float)
         return s[s >= 0]
 
-    a = _series_for_group(group_a)
-    b = _series_for_group(group_b)
+    a = _series_for_group(group_a, group_b)
+    b = _series_for_group(group_b, group_a)
 
     if group_a == MEDIAN_BASELINE_LABEL and group_b == MEDIAN_BASELINE_LABEL:
         return {"ok": False, "reason": "Please choose at least one real group (not both Median baseline)."}
@@ -370,21 +376,29 @@ def make_likelihood_fig(
     group_a: str,
     group_b: str,
 ) -> tuple[go.Figure, pd.DataFrame]:
-    if group_a == MEDIAN_BASELINE_LABEL or group_b == MEDIAN_BASELINE_LABEL:
+    if group_a == MEDIAN_BASELINE_LABEL and group_b == MEDIAN_BASELINE_LABEL:
         return go.Figure(), pd.DataFrame()
 
-    gdf = df[df[group_col].isin([group_a, group_b])].copy()
-    if gdf.empty:
-        return go.Figure(), pd.DataFrame()
+    rows = []
+    for g in [group_a, group_b]:
+        if g == MEDIAN_BASELINE_LABEL:
+            other = group_b if g == group_a else group_a
+            sub = df[df[group_col].notna() & (df[group_col].astype(str) != str(other))].copy()
+        else:
+            sub = df[df[group_col].astype(str) == str(g)].copy()
+        if sub.empty:
+            continue
+        rows.append(
+            {
+                "group": g,
+                "defect_n": int(sub["cancellation_dt"].notna().sum()),
+                "total_n": int(len(sub)),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return go.Figure(), out
 
-    gdf = gdf.assign(defect_flag=defect_rate(gdf))
-
-    out = (
-        gdf.groupby(group_col, dropna=False)["defect_flag"]
-        .agg(defect_n="sum", total_n="count")
-        .reset_index()
-        .rename(columns={group_col: "group"})
-    )
     out["likelihood"] = out["defect_n"] / out["total_n"]
     # 95% CI (normal approximation) for a binomial proportion.
     out["se"] = (out["likelihood"] * (1 - out["likelihood"]) / out["total_n"]).pow(0.5)
@@ -740,8 +754,6 @@ def main() -> None:
     with c2:
         if group_a == group_b:
             st.info("Choose different Group A and Group B for likelihood view.")
-        elif group_a == MEDIAN_BASELINE_LABEL or group_b == MEDIAN_BASELINE_LABEL:
-            st.info("Likelihood view requires two real groups. Median baseline is only supported in A/B timing comparison.")
         else:
             fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b)
             st.plotly_chart(fig3, use_container_width=True)
