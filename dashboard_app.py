@@ -12,7 +12,13 @@ import streamlit as st
 
 st.set_page_config(page_title="Specimen Journey Dashboard", layout="wide")
 
-DATA_PATH = Path("outputs/eda/ordered_test_level_table.csv")
+DATA_CANDIDATES = [
+    Path("outputs/eda/ordered_test_level_table.parquet"),
+    Path("outputs/eda/ordered_test_level_table.csv"),
+    Path("data/ordered_test_level_table.parquet"),
+    Path("data/ordered_test_level_table.csv"),
+]
+RAW_PARTS_GLOB = "data/raw_parts/2025_specimen_time_series_events_no_phi.part*.tsv"
 
 MILESTONES = [
     "test_ordered_dt",
@@ -53,15 +59,102 @@ MILESTONE_LABELS = {
 }
 
 @st.cache_data(show_spinner=True)
-def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
+def _build_ordered_test_table_from_raw_parts(parts: list[Path]) -> pd.DataFrame:
+    usecols = [
+        "accession_id",
+        "test_code",
+        "event_street",
+        "test_performing_dept",
+        "test_performing_location",
+        "event_source",
+        "event_type",
+        "event_dt",
+    ]
+    dtypes = {c: "string" for c in usecols}
+    frames = []
+    for p in sorted(parts):
+        frames.append(pd.read_csv(p, sep="\t", usecols=usecols, dtype=dtypes))
+
+    raw = pd.concat(frames, ignore_index=True)
+    raw["event_dt"] = pd.to_datetime(raw["event_dt"], errors="coerce", utc=True)
+
+    order = raw[(raw["event_source"] == "order") & (raw["test_code"].notna())].copy()
+    order["ot_key"] = order["accession_id"] + "||" + order["test_code"]
+
+    # Keep only milestones used by dashboard.
+    needed = [
+        "test_ordered_dt",
+        "test_collected_dt",
+        "test_receipt_dt",
+        "test_min_resulted_dt",
+        "test_max_verified_dt",
+        "cancellation_dt",
+    ]
+    order = order[order["event_type"].isin(needed)].copy()
+
+    # First timestamp per ordered-test per event type.
+    first = (
+        order.sort_values("event_dt")
+        .drop_duplicates(subset=["ot_key", "event_type"], keep="first")
+        .pivot(index="ot_key", columns="event_type", values="event_dt")
+        .reset_index()
+    )
+
+    # Anchor dimensions from ordered event rows.
+    dims = order[order["event_type"] == "test_ordered_dt"].copy()
+    dims = dims.sort_values("event_dt").drop_duplicates(subset=["ot_key"], keep="first")
+    dims = dims[
+        ["ot_key", "accession_id", "test_code", "event_street", "test_performing_dept", "test_performing_location"]
+    ]
+
+    df = dims.merge(first, on="ot_key", how="left")
+
+    # Compute offsets.
+    all_m = [
+        "test_ordered_dt",
+        "test_collected_dt",
+        "test_receipt_dt",
+        "test_min_resulted_dt",
+        "test_max_verified_dt",
+        "cancellation_dt",
+    ]
+    for m in all_m:
+        if m in df.columns:
+            df[f"offset_{m}_h"] = (df[m] - df["test_ordered_dt"]).dt.total_seconds() / 3600.0
+    return df
+
+
+@st.cache_data(show_spinner=True)
+def load_data() -> tuple[pd.DataFrame, str]:
+    df = None
+    source = ""
+    for p in DATA_CANDIDATES:
+        if p.exists():
+            if p.suffix.lower() == ".parquet":
+                df = pd.read_parquet(p)
+            else:
+                df = pd.read_csv(p)
+            source = str(p)
+            break
+
+    if df is None:
+        parts = [Path(x) for x in sorted(Path(".").glob(RAW_PARTS_GLOB))]
+        if not parts:
+            raise FileNotFoundError(
+                "No dashboard data found. Expected one of: "
+                + ", ".join(str(x) for x in DATA_CANDIDATES)
+                + f", or raw split parts matching {RAW_PARTS_GLOB}"
+            )
+        df = _build_ordered_test_table_from_raw_parts(parts)
+        source = f"built from raw parts ({len(parts)} files)"
+
     dt_cols = [c for c in df.columns if c.endswith("_dt")]
     for c in dt_cols:
         df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
     # Derived A/B dimension: weekday vs weekend by order timestamp.
     wd = df["test_ordered_dt"].dt.weekday
     df["order_day_type"] = wd.map(lambda x: "Weekend" if pd.notna(x) and int(x) >= 5 else "Weekday")
-    return df
+    return df, source
 
 
 def summarize_offsets(df: pd.DataFrame) -> pd.DataFrame:
@@ -454,11 +547,13 @@ def main() -> None:
     st.title("Specimen Journey Dashboard (V1)")
     st.caption("Interactive dashboard for average timeline, A/B comparison, and defect-event likelihood.")
 
-    if not DATA_PATH.exists():
-        st.error(f"Data file not found: {DATA_PATH}")
+    try:
+        df, source = load_data()
+    except FileNotFoundError as e:
+        st.error(str(e))
         st.stop()
 
-    df = load_data(str(DATA_PATH))
+    st.caption(f"Data source: {source}")
 
     with st.expander("Data Dictionary (What Each Variable Means)", expanded=False):
         dict_df = pd.DataFrame(
