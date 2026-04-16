@@ -543,6 +543,28 @@ def compute_likelihood_pvalue(out: pd.DataFrame, group_a: str, group_b: str) -> 
     return {"ok": True, "pvalue": float(pval), "z": float(z), "sentence": sentence}
 
 
+def remove_negative_offset_records(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    # Remove rows with physically implausible negative process offsets.
+    check_cols = [
+        "offset_test_collected_dt_h",
+        "offset_test_receipt_dt_h",
+        "offset_test_min_resulted_dt_h",
+        "offset_test_max_verified_dt_h",
+        "offset_cancellation_dt_h",
+    ]
+    existing = [c for c in check_cols if c in df.columns]
+    if not existing:
+        return df, 0
+
+    bad_mask = pd.Series(False, index=df.index)
+    for c in existing:
+        bad_mask = bad_mask | df[c].lt(0).fillna(False)
+
+    removed = int(bad_mask.sum())
+    cleaned = df.loc[~bad_mask].copy()
+    return cleaned, removed
+
+
 def main() -> None:
     st.title("Specimen Journey Dashboard (V1)")
     st.caption("Interactive dashboard for average timeline, A/B comparison, and defect-event likelihood.")
@@ -634,6 +656,10 @@ def main() -> None:
         f = f[f["test_performing_dept"].isin(selected_depts)]
     if selected_locs:
         f = f[f["test_performing_location"].isin(selected_locs)]
+
+    f, removed_negative_n = remove_negative_offset_records(f)
+    if removed_negative_n > 0:
+        st.info(f"Excluded {removed_negative_n:,} records with negative process-time offsets.")
 
     if f.empty:
         st.warning("No data after filters. Please relax filter conditions.")
