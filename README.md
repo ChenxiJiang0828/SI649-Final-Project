@@ -84,6 +84,7 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
 - A/B grouping options:
   - Weekday vs Weekend (`Order Day Type`)
   - Street / department / location / test code
+  - `All Others (Complement)` baseline for "one group vs everyone else"
 - Attainment heatmap control (in main area):
   - `Attainment Threshold for Heatmap (hours)` with 0.5-hour step
 - Defect event (current dashboard version):
@@ -93,6 +94,32 @@ Then open the local URL shown in terminal (typically `http://localhost:8501`).
   - Event likelihood: two-proportion z-test + p-value + natural-language significance summary
 - Robust date behavior:
   - If selected date range exceeds data bounds, it is auto-clamped to available min/max dates.
+
+## How to Use the Dashboard
+
+1. Start app with:
+```bash
+streamlit run dashboard_app.py
+```
+2. In the left sidebar, set `Ordered Date Range` and optional filters (`Test Code`, `Street`, `Performing Dept`, `Performing Location`) to define your cohort.
+3. Read top KPI cards:
+   - `Unique Orders`
+   - `Samples`
+   - `Median Process Time`
+   - `Cancellation Rate`
+4. Read `Completion Curves by Stage`:
+   - X-axis = hours since order placed (0-15h)
+   - Y-axis = % samples completed
+   - Four lines = Collected / Received / First Result / Final Verified
+5. Adjust `Attainment Threshold for Heatmap (hours)` under the first chart to compare top-volume groups at your target SLA window.
+6. Configure A/B in sidebar:
+   - Choose `Group Dimension`
+   - Choose `Group A` and `Group B`
+   - You may choose `All Others (Complement)` to compare one selected group against all other groups in that dimension.
+7. Interpret bottom charts:
+   - Left: A/B timing bars (median hours by milestone) + Mann-Whitney U p-value summary.
+   - Right: cancellation likelihood + 95% CI + two-proportion z-test p-value summary.
+8. Use the final table (`Filtered Cohort Snapshot`) for quick spot-checking of raw rows under current filters.
 
 ## Notes
 
