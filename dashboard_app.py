@@ -640,10 +640,13 @@ def main() -> None:
         st.stop()
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Ordered Tests (Filtered)", f"{len(f):,}")
-    k2.metric("Unique Orders", f"{f['accession_id'].nunique():,}")
-    verified_cov = f["test_max_verified_dt"].notna().mean()
-    k3.metric("Final Verified Coverage", f"{verified_cov:.2%}")
+    k1.metric("Unique Orders", f"{f['accession_id'].nunique():,}")
+    k2.metric("Samples", f"{len(f):,}")
+    total_process_median = f["offset_test_max_verified_dt_h"].dropna()
+    k3.metric(
+        "Median Process Time",
+        f"{total_process_median.median():.2f} h" if len(total_process_median) else "N/A",
+    )
     cancel_rate = f["cancellation_dt"].notna().mean()
     k4.metric("Cancellation Rate", f"{cancel_rate:.2%}")
 
