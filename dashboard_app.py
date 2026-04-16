@@ -31,6 +31,8 @@ MILESTONES = [
     "cancellation_dt",
 ]
 
+MEDIAN_BASELINE_LABEL = "Median (All Filtered Cohort)"
+
 GROUPABLE_COLS = [
     "order_day_type",
     "event_street",
@@ -154,6 +156,7 @@ def load_data() -> tuple[pd.DataFrame, str]:
     # Derived A/B dimension: weekday vs weekend by order timestamp.
     wd = df["test_ordered_dt"].dt.weekday
     df["order_day_type"] = wd.map(lambda x: "Weekend" if pd.notna(x) and int(x) >= 5 else "Weekday")
+
     return df, source
 
 
@@ -268,9 +271,16 @@ def make_completion_curves_fig(df: pd.DataFrame, title: str) -> go.Figure:
 
 
 def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) -> go.Figure:
-    gdf = df[df[group_col].isin([group_a, group_b])].copy()
+    def _subset_for_group(g: str) -> pd.DataFrame:
+        if g == MEDIAN_BASELINE_LABEL:
+            return df.copy()
+        return df[df[group_col] == g].copy()
+
     rows = []
-    for g, sub in gdf.groupby(group_col):
+    for g in [group_a, group_b]:
+        sub = _subset_for_group(g)
+        if sub.empty:
+            continue
         s = summarize_offsets(sub)
         s["group"] = g
         rows.append(s)
@@ -308,12 +318,18 @@ def compute_ab_completion_stats(
     group_b: str,
     metric_col: str = "offset_test_max_verified_dt_h",
 ) -> dict:
-    sub = df[df[group_col].isin([group_a, group_b])].copy()
-    a = sub.loc[sub[group_col] == group_a, metric_col].dropna().astype(float)
-    b = sub.loc[sub[group_col] == group_b, metric_col].dropna().astype(float)
+    def _series_for_group(g: str) -> pd.Series:
+        if g == MEDIAN_BASELINE_LABEL:
+            s = df[metric_col].dropna().astype(float)
+        else:
+            s = df.loc[df[group_col] == g, metric_col].dropna().astype(float)
+        return s[s >= 0]
 
-    a = a[a >= 0]
-    b = b[b >= 0]
+    a = _series_for_group(group_a)
+    b = _series_for_group(group_b)
+
+    if group_a == MEDIAN_BASELINE_LABEL and group_b == MEDIAN_BASELINE_LABEL:
+        return {"ok": False, "reason": "Please choose at least one real group (not both Median baseline)."}
 
     if len(a) < 2 or len(b) < 2:
         return {"ok": False, "reason": "Not enough data points for statistical testing."}
@@ -354,6 +370,9 @@ def make_likelihood_fig(
     group_a: str,
     group_b: str,
 ) -> tuple[go.Figure, pd.DataFrame]:
+    if group_a == MEDIAN_BASELINE_LABEL or group_b == MEDIAN_BASELINE_LABEL:
+        return go.Figure(), pd.DataFrame()
+
     gdf = df[df[group_col].isin([group_a, group_b])].copy()
     if gdf.empty:
         return go.Figure(), pd.DataFrame()
@@ -623,6 +642,8 @@ def main() -> None:
         group_col = [k for k, v in GROUPABLE_LABELS.items() if v == group_dim_label][0]
 
         grp_values = sorted([x for x in df[group_col].dropna().astype(str).unique().tolist()])
+        if MEDIAN_BASELINE_LABEL not in grp_values:
+            grp_values.append(MEDIAN_BASELINE_LABEL)
         if group_col == "order_day_type" and "Weekday" in grp_values and "Weekend" in grp_values:
             default_a, default_b = "Weekday", "Weekend"
         else:
@@ -719,6 +740,8 @@ def main() -> None:
     with c2:
         if group_a == group_b:
             st.info("Choose different Group A and Group B for likelihood view.")
+        elif group_a == MEDIAN_BASELINE_LABEL or group_b == MEDIAN_BASELINE_LABEL:
+            st.info("Likelihood view requires two real groups. Median baseline is only supported in A/B timing comparison.")
         else:
             fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b)
             st.plotly_chart(fig3, use_container_width=True)
