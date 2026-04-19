@@ -18,6 +18,7 @@ DATA_CANDIDATES = [
     Path("data/ordered_test_level_table.parquet"),
     Path("data/ordered_test_level_table.csv"),
 ]
+RAW_TSV_FILE = Path("2025_specimen_time_series_events_no_phi.tsv")
 RAW_PARTS_GLOB = "data/raw_parts/2025_specimen_time_series_events_no_phi.part*.tsv"
 
 MILESTONES = [
@@ -140,15 +141,19 @@ def load_data() -> tuple[pd.DataFrame, str]:
             break
 
     if df is None:
-        parts = [Path(x) for x in sorted(Path(".").glob(RAW_PARTS_GLOB))]
-        if not parts:
-            raise FileNotFoundError(
-                "No dashboard data found. Expected one of: "
-                + ", ".join(str(x) for x in DATA_CANDIDATES)
-                + f", or raw split parts matching {RAW_PARTS_GLOB}"
-            )
-        df = _build_ordered_test_table_from_raw_parts(parts)
-        source = f"built from raw parts ({len(parts)} files)"
+        if RAW_TSV_FILE.exists():
+            df = _build_ordered_test_table_from_raw_parts([RAW_TSV_FILE])
+            source = str(RAW_TSV_FILE)
+        else:
+            parts = [Path(x) for x in sorted(Path(".").glob(RAW_PARTS_GLOB))]
+            if not parts:
+                raise FileNotFoundError(
+                    "No dashboard data found. Expected one of: "
+                    + ", ".join(str(x) for x in DATA_CANDIDATES)
+                    + f", raw file {RAW_TSV_FILE}, or raw split parts matching {RAW_PARTS_GLOB}"
+                )
+            df = _build_ordered_test_table_from_raw_parts(parts)
+            source = f"built from raw parts ({len(parts)} files)"
 
     dt_cols = [c for c in df.columns if c.endswith("_dt")]
     for c in dt_cols:
@@ -185,6 +190,7 @@ def summarize_offsets(df: pd.DataFrame) -> pd.DataFrame:
 def make_timeline_fig(t: pd.DataFrame, title: str) -> go.Figure:
     t = t.copy()
     t["milestone_label"] = t["milestone"].map(MILESTONE_LABELS).fillna(t["milestone"])
+    t = t[t["median_h"].notna()].copy()
 
     fig = go.Figure()
     fig.add_trace(
@@ -204,11 +210,16 @@ def make_timeline_fig(t: pd.DataFrame, title: str) -> go.Figure:
             marker=dict(size=9),
         )
     )
+    milestone_order = [MILESTONE_LABELS.get(m, m) for m in MILESTONES]
     fig.update_layout(
         title=title,
         xaxis_title="Hours Since Order Placed",
         yaxis_title="Milestone",
         height=430,
+        yaxis=dict(
+            categoryorder="array",
+            categoryarray=milestone_order,
+        ),
     )
     return fig
 
@@ -295,6 +306,12 @@ def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) ->
     ab = ab[ab["milestone"] != "test_ordered_dt"].copy()
     ab["milestone_label"] = ab["milestone"].map(MILESTONE_LABELS).fillna(ab["milestone"])
 
+    dim_label = GROUPABLE_LABELS.get(group_col, group_col)
+    if group_col == "order_day_type":
+        title = f"A/B Comparison: {dim_label}"
+    else:
+        title = f"A/B Comparison: {dim_label} ({group_a} vs {group_b})"
+
     fig = px.bar(
         ab,
         x="median_h",
@@ -303,7 +320,7 @@ def make_ab_fig(df: pd.DataFrame, group_col: str, group_a: str, group_b: str) ->
         barmode="group",
         orientation="h",
         hover_data=["n", "p25_h", "p75_h", "mean_h"],
-        title=f"A/B Comparison: {GROUPABLE_LABELS.get(group_col, group_col)} ({group_a} vs {group_b})",
+        title=title,
     )
     fig.update_layout(
         height=430,
@@ -335,7 +352,7 @@ def compute_ab_completion_stats(
     b = _series_for_group(group_b, group_a)
 
     if group_a == MEDIAN_BASELINE_LABEL and group_b == MEDIAN_BASELINE_LABEL:
-        return {"ok": False, "reason": "Please choose at least one real group (not both Median baseline)."}
+        return {"ok": False, "reason": "Please choose at least one real group (not both All Others baseline)."}
 
     if len(a) < 2 or len(b) < 2:
         return {"ok": False, "reason": "Not enough data points for statistical testing."}
@@ -405,7 +422,6 @@ def make_likelihood_fig(
     out["ci_low"] = (out["likelihood"] - 1.96 * out["se"]).clip(lower=0)
     out["ci_high"] = (out["likelihood"] + 1.96 * out["se"]).clip(upper=1)
 
-    title_event = "cancellation_dt"
 
     # Dot plot with confidence intervals is more readable for 2-group A/B.
     fig = go.Figure()
@@ -413,9 +429,7 @@ def make_likelihood_fig(
         go.Scatter(
             x=out["group"],
             y=out["likelihood"],
-            mode="markers+text",
-            text=[f"{x:.1%}" for x in out["likelihood"]],
-            textposition="top center",
+            mode="markers",
             marker=dict(size=12),
             error_y=dict(
                 type="data",
@@ -429,7 +443,7 @@ def make_likelihood_fig(
             hovertemplate=(
                 "Group=%{x}<br>"
                 "Likelihood=%{y:.2%}<br>"
-                "Defect Count=%{customdata[0]}<br>"
+                "Cancellation Count=%{customdata[0]}<br>"
                 "Total=%{customdata[1]}<extra></extra>"
             ),
             name="Cancellation Likelihood",
@@ -450,9 +464,23 @@ def make_likelihood_fig(
     y_max = min(1.0, float(out["ci_high"].max()) + 0.002)
     span = max(0.0001, y_max - y_min)
     dtick = span / 5.0
+    # Put labels beside the point estimates (left/right) to avoid overlapping error bars.
+    for i, (_, row) in enumerate(out.iterrows()):
+        x_shift = -16 if i % 2 == 0 else 16
+        x_anchor = "right" if i % 2 == 0 else "left"
+        fig.add_annotation(
+            x=row["group"],
+            y=float(row["likelihood"]),
+            text=f"{float(row['likelihood']):.1%}",
+            showarrow=False,
+            xshift=x_shift,
+            xanchor=x_anchor,
+            yanchor="middle",
+            font=dict(size=14),
+        )
 
     fig.update_layout(
-        title=f"Event Likelihood ({title_event})",
+        title="Cancellation Likelihood",
         height=430,
         xaxis_title="Group",
         yaxis_title="Likelihood",
@@ -504,6 +532,7 @@ def make_attainment_6h_heatmap(
     if t.empty:
         return go.Figure(), t
 
+    threshold_label = _format_duration_label(threshold_h)
     stage_cols = ["Collected", "Received", "First Result", "Final Verified"]
     z = t[stage_cols].to_numpy() * 100.0
     y = t["group_label"].tolist()
@@ -519,17 +548,20 @@ def make_attainment_6h_heatmap(
             colorscale="Blues",
             zmin=0,
             zmax=100,
-            colorbar=dict(title=f"Within {threshold_h:g}h (%)"),
-            hovertemplate=f"Group=%{{y}}<br>Stage=%{{x}}<br>{threshold_h:g}h Attainment=%{{z:.1f}}%<extra></extra>",
+            colorbar=dict(title=f"Within {threshold_label} (%)"),
+            hovertemplate=f"Group=%{{y}}<br>Stage=%{{x}}<br>{threshold_label} Attainment=%{{z:.1f}}%<extra></extra>",
         )
     )
     fig.update_layout(
         title=(
-            f"{threshold_h:g}-hour attainment by {GROUPABLE_LABELS.get(group_col, group_col)} "
+            f"{threshold_label} attainment by {GROUPABLE_LABELS.get(group_col, group_col)} "
             f"(Top {min(top_n, len(t))} by volume)"
         ),
         xaxis_title="Stage",
-        yaxis_title="Group (sample size)",
+        yaxis=dict(
+            title="Group (sample size)",
+            autorange="reversed",
+        ),
         height=450,
     )
     return fig, t
@@ -577,15 +609,8 @@ def compute_likelihood_pvalue(out: pd.DataFrame, group_a: str, group_b: str) -> 
 
 
 def remove_negative_offset_records(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    # Remove rows with physically implausible negative process offsets.
-    check_cols = [
-        "offset_test_collected_dt_h",
-        "offset_test_receipt_dt_h",
-        "offset_test_min_resulted_dt_h",
-        "offset_test_max_verified_dt_h",
-        "offset_cancellation_dt_h",
-    ]
-    existing = [c for c in check_cols if c in df.columns]
+    # Remove rows only when any available offset column is negative.
+    existing = [c for c in df.columns if c.startswith("offset_") and c.endswith("_h")]
     if not existing:
         return df, 0
 
@@ -598,6 +623,72 @@ def remove_negative_offset_records(df: pd.DataFrame) -> tuple[pd.DataFrame, int]
     return cleaned, removed
 
 
+def _group_values_for_col(df: pd.DataFrame, group_col: str) -> list[str]:
+    vals = sorted(df[group_col].dropna().astype(str).unique().tolist())
+    # "All Others" is meaningful only if there are at least two concrete groups.
+    if len(vals) >= 2:
+        vals.append(MEDIAN_BASELINE_LABEL)
+    return vals
+
+
+def _render_dynamic_multiselect(
+    label: str,
+    key: str,
+    option_df: pd.DataFrame,
+    col: str,
+    top_n: int,
+) -> list[str]:
+    options = option_df[col].dropna().astype(str).value_counts().head(top_n).index.tolist()
+    existing = st.session_state.get(key, [])
+    if not isinstance(existing, list):
+        existing = []
+    existing = [x for x in existing if x in options]
+    st.session_state[key] = existing
+    return st.multiselect(label, options=options, default=existing, key=key)
+
+
+def _compute_dynamic_threshold_slider_settings(df: pd.DataFrame) -> tuple[float, float, float]:
+    col = "offset_test_max_verified_dt_h"
+    if col not in df.columns:
+        return 0.5, 24.0, 6.0
+
+    s = pd.to_numeric(df[col], errors="coerce").dropna()
+    s = s[s >= 0]
+    if s.empty:
+        return 0.5, 24.0, 6.0
+
+    p95 = float(s.quantile(0.95))
+    dynamic_max = p95 * 1.10
+
+    # Dynamic slider granularity based on max horizon.
+    if dynamic_max <= 2.0:
+        step = 1.0 / 60.0  # 1 minute
+    elif dynamic_max <= 12.0:
+        step = 5.0 / 60.0  # 5 minutes
+    else:
+        step = 15.0 / 60.0  # 15 minutes
+
+    # Keep a practical minimum upper bound and snap to step.
+    slider_max = max(step, dynamic_max)
+    slider_max = float(np.ceil(slider_max / step) * step)
+
+    default_value = min(6.0, slider_max)
+    default_value = float(np.round(default_value / step) * step)
+    default_value = min(max(step, default_value), slider_max)
+
+    return step, slider_max, default_value
+
+
+def _format_duration_label(hours: float) -> str:
+    total_min = int(round(hours * 60.0))
+    if total_min < 120:
+        return f"{total_min} min"
+    h, m = divmod(total_min, 60)
+    if m == 0:
+        return f"{h} h"
+    return f"{h}h {m}m"
+
+
 def main() -> None:
     st.title("Specimen Journey Dashboard (V1)")
     st.caption("Interactive dashboard for average timeline, A/B comparison, and defect-event likelihood.")
@@ -606,6 +697,9 @@ def main() -> None:
         df, source = load_data()
     except FileNotFoundError as e:
         st.error(str(e))
+        st.stop()
+    except Exception as e:
+        st.error(f"Unable to load dashboard data: {e}")
         st.stop()
 
     st.caption(f"Data source: {source}")
@@ -627,8 +721,11 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Global Filters")
-        ordered_min = df["test_ordered_dt"].min()
-        ordered_max = df["test_ordered_dt"].max()
+        ordered_min = df["test_ordered_dt"].min() if "test_ordered_dt" in df.columns else pd.NaT
+        ordered_max = df["test_ordered_dt"].max() if "test_ordered_dt" in df.columns else pd.NaT
+        if pd.isna(ordered_min) or pd.isna(ordered_max):
+            st.error("`test_ordered_dt` is missing or invalid in the dataset.")
+            st.stop()
         ordered_min_date = ordered_min.date()
         ordered_max_date = ordered_max.date()
         date_range = st.date_input(
@@ -636,17 +733,43 @@ def main() -> None:
             value=(ordered_min_date, ordered_max_date),
         )
 
-        top_test_codes = df["test_code"].value_counts().head(50).index.tolist()
-        selected_codes = st.multiselect("Test Code", options=top_test_codes, default=[])
+        # Dynamic filter options: each widget only shows values present after prior selections.
+        option_df = df.copy()
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            requested_start = date_range[0]
+            requested_end = date_range[1]
+            clamped_start = max(requested_start, ordered_min_date)
+            clamped_end = min(requested_end, ordered_max_date)
+            start_date = pd.to_datetime(clamped_start, utc=True)
+            end_date = pd.to_datetime(clamped_end, utc=True)
+            option_df = option_df[
+                (option_df["test_ordered_dt"] >= start_date)
+                & (option_df["test_ordered_dt"] <= end_date + pd.Timedelta(days=1))
+            ]
 
-        top_streets = df["event_street"].value_counts().head(30).index.tolist()
-        selected_streets = st.multiselect("Collection/Transit Street", options=top_streets, default=[])
+        selected_codes = _render_dynamic_multiselect(
+            "Test Code", "flt_test_code", option_df, "test_code", top_n=50
+        )
+        if selected_codes:
+            option_df = option_df[option_df["test_code"].astype(str).isin(selected_codes)]
 
-        top_depts = df["test_performing_dept"].value_counts().head(30).index.tolist()
-        selected_depts = st.multiselect("Performing Lab Department", options=top_depts, default=[])
+        selected_streets = _render_dynamic_multiselect(
+            "Collection/Transit Street", "flt_event_street", option_df, "event_street", top_n=30
+        )
+        if selected_streets:
+            option_df = option_df[option_df["event_street"].astype(str).isin(selected_streets)]
 
-        top_locs = df["test_performing_location"].value_counts().head(30).index.tolist()
-        selected_locs = st.multiselect("Performing Lab Location", options=top_locs, default=[])
+        selected_depts = _render_dynamic_multiselect(
+            "Performing Lab Department", "flt_performing_dept", option_df, "test_performing_dept", top_n=30
+        )
+        if selected_depts:
+            option_df = option_df[option_df["test_performing_dept"].astype(str).isin(selected_depts)]
+
+        selected_locs = _render_dynamic_multiselect(
+            "Performing Lab Location", "flt_performing_loc", option_df, "test_performing_location", top_n=30
+        )
+        if selected_locs:
+            option_df = option_df[option_df["test_performing_location"].astype(str).isin(selected_locs)]
 
         st.markdown("---")
         st.header("A/B + Likelihood Setup")
@@ -655,9 +778,10 @@ def main() -> None:
         group_dim_label = st.selectbox("Group Dimension", options=group_dim_options, index=0)
         group_col = [k for k, v in GROUPABLE_LABELS.items() if v == group_dim_label][0]
 
-        grp_values = sorted([x for x in df[group_col].dropna().astype(str).unique().tolist()])
-        if MEDIAN_BASELINE_LABEL not in grp_values:
-            grp_values.append(MEDIAN_BASELINE_LABEL)
+        grp_values = _group_values_for_col(option_df, group_col)
+        if not grp_values:
+            st.warning("No valid groups available for the selected Group Dimension.")
+            st.stop()
         if group_col == "order_day_type" and "Weekday" in grp_values and "Weekend" in grp_values:
             default_a, default_b = "Weekday", "Weekend"
         else:
@@ -665,8 +789,12 @@ def main() -> None:
             default_b = "Medical" if "Medical" in grp_values and "Medical" != default_a else (
                 grp_values[1] if len(grp_values) > 1 else default_a
             )
-        group_a = st.selectbox("Group A", options=grp_values, index=grp_values.index(default_a))
-        group_b = st.selectbox("Group B", options=grp_values, index=grp_values.index(default_b))
+        if "ab_group_a" in st.session_state and st.session_state["ab_group_a"] not in grp_values:
+            st.session_state["ab_group_a"] = default_a
+        if "ab_group_b" in st.session_state and st.session_state["ab_group_b"] not in grp_values:
+            st.session_state["ab_group_b"] = default_b
+        group_a = st.selectbox("Group A", options=grp_values, index=grp_values.index(default_a), key="ab_group_a")
+        group_b = st.selectbox("Group B", options=grp_values, index=grp_values.index(default_b), key="ab_group_b")
 
         st.caption("Event likelihood is computed for: Cancellation Event")
 
@@ -694,11 +822,26 @@ def main() -> None:
 
     f, removed_negative_n = remove_negative_offset_records(f)
     if removed_negative_n > 0:
-        st.info(f"Excluded {removed_negative_n:,} records with negative process-time offsets.")
+        st.info(f"Excluded {removed_negative_n:,} records with invalid time records.")
 
     if f.empty:
         st.warning("No data after filters. Please relax filter conditions.")
         st.stop()
+
+    # Re-validate group selections against filtered cohort to avoid edge-case runtime errors.
+    filtered_group_values = _group_values_for_col(f, group_col)
+    if not filtered_group_values:
+        st.warning("No valid groups for A/B comparison after current filters. Please relax filters.")
+        st.stop()
+    if group_a not in filtered_group_values:
+        group_a = filtered_group_values[0]
+        st.info(f"Group A was auto-adjusted to `{group_a}` for the filtered cohort.")
+    if group_b not in filtered_group_values:
+        group_b = filtered_group_values[1] if len(filtered_group_values) > 1 else filtered_group_values[0]
+        st.info(f"Group B was auto-adjusted to `{group_b}` for the filtered cohort.")
+    if group_a == group_b and len(filtered_group_values) > 1:
+        group_b = next(x for x in filtered_group_values if x != group_a)
+        st.info(f"Group B was auto-adjusted to `{group_b}` to keep A/B groups distinct.")
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Unique Orders", f"{f['accession_id'].nunique():,}")
@@ -713,26 +856,51 @@ def main() -> None:
 
     st.markdown("---")
 
-    fig1 = make_completion_curves_fig(f, "Completion Curves by Stage (Filtered Cohort)")
-    st.plotly_chart(fig1, use_container_width=True)
+    try:
+        timeline_tbl = summarize_offsets(f)
+        timeline_tbl = timeline_tbl[timeline_tbl["milestone"] != "cancellation_dt"].copy()
+        fig1 = make_timeline_fig(timeline_tbl, "Average Timeline (Filtered Cohort)")
+        st.plotly_chart(fig1, use_container_width=True)
+    except Exception:
+        st.warning("Unable to render average timeline for the current selection.")
 
     # Pre-A/B view: top-N group attainment heatmap with local threshold control.
-    attainment_threshold = st.slider(
-        "Attainment Threshold for Heatmap (hours)",
-        min_value=0.5,
-        max_value=24.0,
-        value=6.0,
-        step=0.5,
-    )
-    fig_attain, attainment_tbl = make_attainment_6h_heatmap(
-        f, group_col=group_col, threshold_h=attainment_threshold, top_n=10
-    )
-    if fig_attain.data:
-        st.plotly_chart(fig_attain, use_container_width=True)
-        st.caption(
-            "Top groups by sample count under current filters. "
-            f"Cells show percent of samples reaching each stage within {attainment_threshold} hours from order placed."
+    threshold_step, threshold_max, threshold_default = _compute_dynamic_threshold_slider_settings(f)
+    # Use minute slider only for short horizons; otherwise keep hours for readability.
+    if threshold_max <= 2.0:
+        step_min = max(1, int(round(threshold_step * 60)))
+        max_min = max(step_min, int(round(threshold_max * 60)))
+        default_min = min(max_min, max(step_min, int(round(threshold_default * 60))))
+        chosen_min = st.slider(
+            "Attainment Threshold for Heatmap (minutes)",
+            min_value=step_min,
+            max_value=max_min,
+            value=default_min,
+            step=step_min,
         )
+        attainment_threshold = chosen_min / 60.0
+    else:
+        attainment_threshold = st.slider(
+            "Attainment Threshold for Heatmap (hours)",
+            min_value=float(threshold_step),
+            max_value=float(threshold_max),
+            value=float(threshold_default),
+            step=float(threshold_step),
+            format="%.2f",
+        )
+    threshold_label = _format_duration_label(attainment_threshold)
+    try:
+        fig_attain, attainment_tbl = make_attainment_6h_heatmap(
+            f, group_col=group_col, threshold_h=attainment_threshold, top_n=10
+        )
+        if fig_attain.data:
+            st.plotly_chart(fig_attain, use_container_width=True)
+            st.caption(
+                "Top groups by sample count under current filters. "
+                f"Cells show percent of samples reaching each stage within {threshold_label} from order placed."
+            )
+    except Exception:
+        st.warning("Unable to render attainment heatmap for the current selection.")
 
     c1, c2 = st.columns(2)
 
@@ -740,47 +908,72 @@ def main() -> None:
         if group_a == group_b:
             st.info("Choose different Group A and Group B for A/B comparison.")
         else:
-            fig2 = make_ab_fig(f, group_col, group_a, group_b)
-            st.plotly_chart(fig2, use_container_width=True)
-            ab_stats = compute_ab_completion_stats(f, group_col, group_a, group_b)
-            if ab_stats.get("ok"):
-                st.caption(
-                    f"A/B completion timing test (Mann-Whitney U): p-value = {ab_stats['pvalue']:.4g}. "
-                    f"{ab_stats['sentence']}"
-                )
-            else:
-                st.caption(f"A/B completion timing test: {ab_stats.get('reason')}")
+            try:
+                fig2 = make_ab_fig(f, group_col, group_a, group_b)
+                st.plotly_chart(fig2, use_container_width=True)
+                ab_stats = compute_ab_completion_stats(f, group_col, group_a, group_b)
+                if ab_stats.get("ok"):
+                    st.caption(
+                        f"A/B completion timing test (Mann-Whitney U): p-value = {ab_stats['pvalue']:.4g}. "
+                        f"{ab_stats['sentence']}"
+                    )
+                else:
+                    st.caption(f"A/B completion timing test: {ab_stats.get('reason')}")
+            except Exception:
+                st.warning("Unable to render A/B timing comparison for the current selection.")
 
     with c2:
         if group_a == group_b:
             st.info("Choose different Group A and Group B for likelihood view.")
         else:
-            fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b)
-            st.plotly_chart(fig3, use_container_width=True)
-            like_stats = compute_likelihood_pvalue(ldf, group_a, group_b) if not ldf.empty else {"ok": False}
-            if like_stats.get("ok"):
-                st.caption(
-                    f"Event Likelihood Test (Two-proportion z-test): p-value = {like_stats['pvalue']:.4g}. "
-                    f"{like_stats['sentence']}"
-                )
-            else:
-                st.caption(f"Event Likelihood Test: {like_stats.get('reason', 'N/A')}")
-            if not ldf.empty:
-                st.dataframe(
-                    ldf.assign(likelihood=ldf["likelihood"].map(lambda x: f"{x:.2%}")).rename(
+            try:
+                fig3, ldf = make_likelihood_fig(f, group_col, group_a, group_b)
+                st.plotly_chart(fig3, use_container_width=True)
+                like_stats = compute_likelihood_pvalue(ldf, group_a, group_b) if not ldf.empty else {"ok": False}
+                if like_stats.get("ok"):
+                    st.caption(
+                        f"Event Likelihood Test (Two-proportion z-test): p-value = {like_stats['pvalue']:.4g}. "
+                        f"{like_stats['sentence']}"
+                    )
+                else:
+                    st.caption(f"Event Likelihood Test: {like_stats.get('reason', 'N/A')}")
+                if not ldf.empty:
+                    ldf_show = ldf.assign(
+                        likelihood=ldf["likelihood"].map(lambda x: f"{x:.2%}"),
+                        se=ldf["se"].map(lambda x: f"{x:.4f}"),
+                        ci_low=ldf["ci_low"].map(lambda x: f"{x:.4f}"),
+                        ci_high=ldf["ci_high"].map(lambda x: f"{x:.4f}"),
+                    ).rename(
                         columns={
                             "group": "Group",
-                            "defect_n": "Defect Count",
-                            "total_n": "Total Ordered Tests",
-                            "likelihood": "Cancellation Likelihood",
+                            "defect_n": "Cancel Count",
+                            "total_n": "Total Tests",
+                            "likelihood": "Likelihood",
+                            "se": "SE",
+                            "ci_low": "CI Low",
+                            "ci_high": "CI High",
                         }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                    )[
+                        [
+                            "Group",
+                            "Cancel Count",
+                            "Total Tests",
+                            "Likelihood",
+                            "SE",
+                            "CI Low",
+                            "CI High",
+                        ]
+                    ]
+                    st.dataframe(
+                        ldf_show,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            except Exception:
+                st.warning("Unable to render likelihood view for the current selection.")
 
     st.markdown("---")
-    st.subheader("Filtered Cohort Snapshot (Readable Columns)")
+    st.markdown("#### Filtered Cohort Snapshot (Readable Columns)")
     st.dataframe(
         f[
             [

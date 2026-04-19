@@ -1,137 +1,66 @@
-# SI 649 Final Project: Specimen Journey Dashboard
+# SI649 Final Project: Specimen Journey Dashboard
 
-This project analyzes lab specimen journey events and provides:
-- Reproducible EDA outputs
-- A draft PDF report section (`Introduction` + `EDA`)
-- An interactive dashboard with:
-  - Stage completion curves (time vs % completed)
-  - Top-group attainment heatmap (threshold-adjustable)
-  - A/B comparison view
-  - Event likelihood view (with p-values and significance summary)
+## Links
+- GitHub repository: https://github.com/ChenxiJiang0828/SI649-Final-Project
+- Deployed app: https://si649-final-project-c9i8szukdpkppytkexbb2d.streamlit.app/
 
-## Project Structure
+## End-to-End Data + App Workflow
 
-- `2025_specimen_time_series_events_no_phi.tsv`: original raw source dataset (local)
-- `data/raw_parts/*.tsv`: split raw dataset parts for GitHub-compatible storage
-- `requirements.txt`: Python dependencies
-- `scripts/eda_specimen.py`: EDA pipeline + intermediate outputs
-- `scripts/generate_intro_eda_pdf.py`: generates `report_intro_eda.pdf`
-- `dashboard_app.py`: Streamlit dashboard app
-- `outputs/eda/`: generated EDA files (csv/json/png)
+This project supports a true end-to-end flow starting from the original raw file:
+
+- Raw source file: `2025_specimen_time_series_events_no_phi.tsv`
+- Dashboard app: `dashboard_app.py`
+- Data split helper for GitHub: `scripts/split_raw_tsv_for_github.py`
+
+The dashboard can run from either:
+1. prebuilt ordered-test table (if present), or
+2. raw single TSV file, or
+3. split raw TSV parts in `data/raw_parts/`.
 
 ## Setup
 
-1. Use Python 3.10+ (tested with Python 3.13).
-2. Install dependencies:
+Use Python 3.10+.
 
 ```bash
+cd <your_project_path>
 pip install -r requirements.txt
 ```
 
-## Run EDA
+## How to Run the Dashboard
 
-Generate EDA outputs used by the dashboard and report:
+1. Make sure at least one data source exists:
+   - `outputs/eda/ordered_test_level_table.csv` (or `.parquet`), OR
+   - `2025_specimen_time_series_events_no_phi.tsv`, OR
+   - `data/raw_parts/2025_specimen_time_series_events_no_phi.part*.tsv`
 
-```bash
-python scripts/eda_specimen.py
-```
-
-Default behavior:
-- Uses `2025_specimen_time_series_events_no_phi.tsv`
-- Filters to year 2025
-- Writes outputs to `outputs/eda/`
-
-Optional example:
-
-```bash
-python scripts/eda_specimen.py --filter-column event_street --filter-value Hospital --ab-group-col test_performing_location --group-a ULAB --group-b NHLA
-```
-
-## Generate Report PDF (Introduction + EDA)
-
-```bash
-python scripts/generate_intro_eda_pdf.py
-```
-
-Output:
-- `report_intro_eda.pdf`
-
-## Run Interactive Dashboard
+2. Start the app:
 
 ```bash
 streamlit run dashboard_app.py
 ```
 
-Then open the local URL shown in terminal (typically `http://localhost:8501`).
+3. Open the local URL shown in terminal (usually `http://localhost:8501`).
 
-### Data Loading Order (Dashboard)
+If the browser does not open automatically, copy the URL from terminal and open it manually.
 
-`dashboard_app.py` auto-loads data in this order:
-1. `outputs/eda/ordered_test_level_table.parquet`
-2. `outputs/eda/ordered_test_level_table.csv`
-3. `data/ordered_test_level_table.parquet`
-4. `data/ordered_test_level_table.csv`
-5. If none exist, build on startup from `data/raw_parts/2025_specimen_time_series_events_no_phi.part*.tsv`
+## Split Raw TSV for GitHub Push
 
-## Dashboard Features
+GitHub rejects files larger than 100MB.  
+Use the script below to split the raw TSV into parts:
 
-- Global filters:
-  - Ordered date range
-  - Test code
-  - Street
-  - Performing department
-  - Performing location
-- A/B grouping options:
-  - Weekday vs Weekend (`Order Day Type`)
-  - Street / department / location / test code
-  - `All Others (Complement)` baseline for "one group vs everyone else"
-- Attainment heatmap control (in main area):
-  - `Attainment Threshold for Heatmap (hours)` with 0.5-hour step
-- Defect event (current dashboard version):
-  - Cancellation event
-- Statistical outputs:
-  - A/B completion timing (`Order -> Final Verified`): Mann-Whitney U test + p-value + natural-language significance summary
-  - Event likelihood: two-proportion z-test + p-value + natural-language significance summary
-- Robust date behavior:
-  - If selected date range exceeds data bounds, it is auto-clamped to available min/max dates.
-
-## How to Use the Dashboard
-
-1. Start app with:
 ```bash
-streamlit run dashboard_app.py
+python scripts/split_raw_tsv_for_github.py --input 2025_specimen_time_series_events_no_phi.tsv --output-dir data/raw_parts --max-mb 95
 ```
-2. In the left sidebar, set `Ordered Date Range` and optional filters (`Test Code`, `Street`, `Performing Dept`, `Performing Location`) to define your cohort.
-3. Read top KPI cards:
-   - `Unique Orders`
-   - `Samples`
-   - `Median Process Time`
-   - `Cancellation Rate`
-4. Read `Completion Curves by Stage`:
-   - X-axis = hours since order placed (0-15h)
-   - Y-axis = % samples completed
-   - Four lines = Collected / Received / First Result / Final Verified
-5. Adjust `Attainment Threshold for Heatmap (hours)` under the first chart to compare top-volume groups at your target SLA window.
-6. Configure A/B in sidebar:
-   - Choose `Group Dimension`
-   - Choose `Group A` and `Group B`
-   - You may choose `All Others (Complement)` to compare one selected group against all other groups in that dimension.
-7. Interpret bottom charts:
-   - Left: A/B timing bars (median hours by milestone) + Mann-Whitney U p-value summary.
-   - Right: cancellation likelihood + 95% CI + two-proportion z-test p-value summary.
-8. Use the final table (`Filtered Cohort Snapshot`) for quick spot-checking of raw rows under current filters.
 
-## Notes
+This creates files like:
+- `data/raw_parts/2025_specimen_time_series_events_no_phi.part1.tsv`
+- `data/raw_parts/2025_specimen_time_series_events_no_phi.part2.tsv`
+- `data/raw_parts/2025_specimen_time_series_events_no_phi.part3.tsv`
 
-- Main analysis grain is **ordered test**: `accession_id + test_code`.
-- `Order Placed` is excluded in A/B chart because it is the zero-time baseline by definition.
-- Completion curves are displayed for the first 15 hours after order placement.
-- If filters produce no rows, relax filters in the sidebar.
-- Raw dataset is split into multiple TSV parts because GitHub rejects single files larger than 100MB.
+## Included Code
 
-## Reproducibility Checklist
-
-1. `pip install -r requirements.txt`
-2. `python scripts/eda_specimen.py`
-3. `python scripts/generate_intro_eda_pdf.py` (optional for report draft)
-4. `streamlit run dashboard_app.py`
+- `dashboard_app.py`: Streamlit dashboard (overall timeline, stage-attainment heatmap, A/B comparison, cancellation likelihood)
+- `scripts/split_raw_tsv_for_github.py`: split raw TSV into GitHub-friendly part files
+- `scripts/eda_specimen.py`: EDA pipeline script
+- `scripts/timestamp_quality_checks.py`: timestamp quality check script
+- `scripts/generate_intro_eda_pdf.py`: report PDF generation helper
